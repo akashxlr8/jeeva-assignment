@@ -4,8 +4,9 @@ from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import MessagesState, START, END, StateGraph
-from typing import Literal
+from typing import Literal, Optional
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+import uuid
     
 from dotenv import load_dotenv
 from dataclasses import dataclass
@@ -17,6 +18,53 @@ current_user_id = None
 # Create checkpointer and store
 checkpointer = InMemorySaver()
 store = InMemoryStore()
+
+# --- Phase 1: Persona Management ---
+
+class PersonaManager:
+    def __init__(self):
+        # user_id -> {persona_name: thread_id}
+        self.user_threads = {}
+        # user_id -> active_thread_id
+        self.active_threads = {}
+        # thread_id -> persona_name
+        self.thread_personas = {}
+
+    def get_or_create_thread(self, user_id: str, persona_name: str) -> str:
+        if user_id not in self.user_threads:
+            self.user_threads[user_id] = {}
+        
+        if persona_name not in self.user_threads[user_id]:
+            # Create new thread ID
+            thread_id = str(uuid.uuid4())
+            self.user_threads[user_id][persona_name] = thread_id
+            self.thread_personas[thread_id] = persona_name
+            print(f"[PersonaManager] Created new thread {thread_id} for persona '{persona_name}'")
+        
+        return self.user_threads[user_id][persona_name]
+
+    def set_active_thread(self, user_id: str, thread_id: str):
+        self.active_threads[user_id] = thread_id
+        persona = self.thread_personas.get(thread_id, "Unknown")
+        print(f"[PersonaManager] Switched active thread to {thread_id} (Persona: {persona})")
+
+    def get_active_thread(self, user_id: str) -> Optional[str]:
+        return self.active_threads.get(user_id)
+
+    def get_persona_by_thread(self, thread_id: str) -> str:
+        return self.thread_personas.get(thread_id, "Business Domain Expert")
+
+# Initialize global manager
+persona_manager = PersonaManager()
+
+# System Prompts for Personas
+SYSTEM_PROMPTS = {
+    "Business Domain Expert": "You are a Business Domain Expert. You are capable of assuming more specific roles. Help the user with general business queries.",
+    "Mentor": "You are a Mentor. You are supportive, encouraging, and focus on personal and professional growth. Draw on your experience to guide the user.",
+    "Investor": "You are a Skeptical Investor. You are critical, focused on numbers, TAM, ROI, and scalability. Ask tough questions.",
+}
+
+# --- End Phase 1 Setup ---
 
 # Define tools
 @tool
@@ -52,30 +100,61 @@ def get_user_info() -> str:
     user_info = store.get(("users",), current_user_id)
     return str(user_info.value) if user_info else "Unknown user"
 
+# Example: Add a tool to update agent's instructions (procedural memory)
+@tool
+def update_instructions(new_instructions: str) -> str:
+    """Update the agent's system instructions for procedural memory."""
+    store.put(("procedural",), "instructions", {"content": new_instructions})
+    return "Instructions updated successfully."
+
 # Create model with tools
 model = init_chat_model(
     "gpt-4.1-mini",
     temperature=0
 )
-tools = [multiply, add, save_user_info, get_user_info]
+tools = [multiply, add, save_user_info, get_user_info, update_instructions]
 llm_with_tools = model.bind_tools(tools)
 tools_by_name = {tool.name: tool for tool in tools}
+
+# Example: Trim messages to fit context window
+def trim_messages(messages, max_messages=10):
+    if len(messages) <= max_messages:
+        return messages
+    return messages[-max_messages:]
 
 # Nodes
 def llm_call(state: MessagesState, config: RunnableConfig):
     """LLM decides whether to call a tool or not"""
     global current_user_id
     user_id = config["configurable"].get("user_id", "unknown")
+    thread_id = config["configurable"].get("thread_id", "unknown")
     current_user_id = user_id
+    
+    # Determine Persona
+    persona_name = persona_manager.get_persona_by_thread(thread_id)
+    base_system = SYSTEM_PROMPTS.get(persona_name, SYSTEM_PROMPTS["Business Domain Expert"])
+    
+    # Retrieve procedural memory (instructions)
+    instructions = store.get(("procedural",), "instructions")
+    system_content = instructions.value["content"] if instructions else base_system
+    
+    # Retrieve user profile for semantic memory
+    profile = store.get(("users",), user_id)
+    profile_str = str(profile.value) if profile else "No profile available"
+    
+    system_content += f"\n\nUser profile: {profile_str}"
+    system_content += f"\n\nCurrent Persona: {persona_name}"
+    
+    # Trim messages for short-term memory management
+    trimmed_messages = trim_messages(state["messages"])
+    
     return {
         "messages": [
             llm_with_tools.invoke(
                 [
-                    SystemMessage(
-                        content="You are a helpful assistant tasked with performing arithmetic on a set of inputs."
-                    )
+                    SystemMessage(content=system_content)
                 ]
-                + state["messages"]
+                + trimmed_messages
             )
         ]
     }
@@ -122,38 +201,77 @@ workflow.add_edge("tool_node", "llm_call")
 graph = workflow.compile(checkpointer=checkpointer, store=store)
 
 
-# Invoke with thread_id AND user_id
-user_id = "user_123"
-config = RunnableConfig(configurable={
-    "thread_id": "conversation_1",  # For checkpoints
-    "user_id": user_id              # For memory store namespace
-})
+# --- Orchestrator Logic ---
 
-result = graph.invoke({"messages": [HumanMessage(content="What is 5 * 3?")]}, config)
+def router(message: str) -> Optional[str]:
+    """
+    Determines if the user wants to switch to a specific persona.
+    Returns the persona name if a switch is detected, else None.
+    """
+    # Simple keyword-based routing for Phase 1 (can be upgraded to LLM)
+    msg_lower = message.lower()
+    if "mentor" in msg_lower and ("act like" in msg_lower or "switch to" in msg_lower or "back to" in msg_lower):
+        return "Mentor"
+    if "investor" in msg_lower and ("act like" in msg_lower or "switch to" in msg_lower or "back to" in msg_lower):
+        return "Investor"
+    if "business" in msg_lower and ("act like" in msg_lower or "switch to" in msg_lower):
+        return "Business Domain Expert"
+    return None
 
-for m in result["messages"]:
-    m.pretty_print()
+def orchestrator(user_id: str, message: str):
+    """
+    Orchestrates the conversation:
+    1. Checks for persona switch.
+    2. Determines active thread.
+    3. Invokes the graph.
+    """
+    # 1. Check for persona switch
+    target_persona = router(message)
+    
+    if target_persona:
+        # Switch detected: Get or create thread for this persona
+        thread_id = persona_manager.get_or_create_thread(user_id, target_persona)
+        persona_manager.set_active_thread(user_id, thread_id)
+        print(f"--> Switching to persona: {target_persona}")
+    else:
+        # No switch: Use active thread, or default to Business Expert if none
+        thread_id = persona_manager.get_active_thread(user_id)
+        if not thread_id:
+            # Default start
+            target_persona = "Business Domain Expert"
+            thread_id = persona_manager.get_or_create_thread(user_id, target_persona)
+            persona_manager.set_active_thread(user_id, thread_id)
+            print(f"--> Starting default persona: {target_persona}")
 
-# Demonstrate agent calling memory tools (save then retrieve)
-save_msg = [HumanMessage(content="Save my profile: name=Alice, age=30")]
-res_save = graph.invoke({"messages": save_msg}, config)
-print("-- after save attempt --")
-for m in res_save["messages"]:
-    m.pretty_print()
+    # 2. Invoke Graph
+    config = RunnableConfig(configurable={
+        "thread_id": thread_id,
+        "user_id": user_id
+    })
+    
+    print(f"--> Invoking thread: {thread_id}")
+    result = graph.invoke({"messages": [HumanMessage(content=message)]}, config)
+    
+    # Print last AI response
+    for m in reversed(result["messages"]):
+        if m.type == "ai":
+            print(f"AI ({persona_manager.get_persona_by_thread(thread_id)}): {m.content}")
+            break
 
-get_msg = [HumanMessage(content="Get my profile")]
-res_get = graph.invoke({"messages": get_msg}, config)
-print("-- after get attempt --")
-for m in res_get["messages"]:
-    m.pretty_print()
+# --- Test Workflow ---
 
-# Example: Save and retrieve long-term memory for user
-user_namespace = (user_id, "profile")
-store.put(user_namespace, "user_profile", {"name": "Akash", "preferences": ["SaaS", "AI"]})
-profile = store.get(user_namespace, "user_profile")
-print("User profile:", profile.value if profile else None)
-
-# Example: Search for memories in namespace
-items = store.search(user_namespace, filter={"preferences": "AI"}, query="preferences")
-print("Search results:", [item.value for item in items])
+if __name__ == "__main__":
+    user_id = "test_user_1"
+    
+    print("\n=== Step 1: Start as Mentor ===")
+    orchestrator(user_id, "Act like my mentor. How can I scale my product?")
+    
+    print("\n=== Step 2: Continue as Mentor ===")
+    orchestrator(user_id, "What are the first steps?")
+    
+    print("\n=== Step 3: Switch to Investor ===")
+    orchestrator(user_id, "Now switch to investor. What is the TAM?")
+    
+    print("\n=== Step 4: Switch back to Mentor ===")
+    orchestrator(user_id, "Back to mentor. What was I asking about scaling?")
 
