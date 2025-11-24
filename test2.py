@@ -1,22 +1,24 @@
 from langgraph.store.memory import InMemoryStore
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import MessagesState, START, END, StateGraph
-from typing import Literal, Optional
+from typing import Optional
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 import uuid
+import sqlite3
     
 from dotenv import load_dotenv
-from dataclasses import dataclass
 load_dotenv()
 
 # Global variable for current user_id
 current_user_id = None
 
 # Create checkpointer and store
-checkpointer = InMemorySaver()
+# check_same_thread=False is recommended for multi-threaded environments (like web apps)
+conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
+checkpointer = SqliteSaver(conn)
 store = InMemoryStore()
 
 # --- Phase 1: Persona Management ---
