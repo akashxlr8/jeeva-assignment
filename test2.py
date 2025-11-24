@@ -8,6 +8,7 @@ from langgraph.store.base import BaseStore
 from typing import TypedDict
     
 from dotenv import load_dotenv
+from dataclasses import dataclass
 load_dotenv()
 
 # Create checkpointer and store
@@ -25,10 +26,28 @@ def add(a: int, b: int) -> int:
     """Add two numbers."""
     return a + b
 
+# Example: Add a tool to update user info in long-term memory
+@tool
+def save_user_info(user_info: dict, runtime):
+    """Save user info to long-term memory."""
+    store = runtime.store
+    user_id = runtime.context.user_id
+    store.put(("users",), user_id, user_info)
+    return "Successfully saved user info."
+
+# Example: Add a tool to retrieve user info from long-term memory
+@tool
+def get_user_info(runtime):
+    """Retrieve user info from long-term memory."""
+    store = runtime.store
+    user_id = runtime.context.user_id
+    user_info = store.get(("users",), user_id)
+    return str(user_info.value) if user_info else "Unknown user"
+
 # Create agent
 agent = create_agent(
     model=ChatOpenAI(),
-    tools=[multiply, add],
+    tools=[multiply, add, save_user_info, get_user_info],
     checkpointer=checkpointer,
     store=store,
 )
@@ -37,6 +56,20 @@ agent = create_agent(
 # object. Use `agent` directly as the runnable/graph.
 graph = agent
 
+# Print registered tool names for verification
+try:
+    names = []
+    for t in getattr(agent, "tools", []):
+        if hasattr(t, "name"):
+            names.append(getattr(t, "name"))
+        elif callable(t):
+            names.append(getattr(t, "__name__", repr(t)))
+        else:
+            names.append(repr(t))
+    print("Registered agent tools:", names)
+except Exception:
+    print("Registered agent tools: unable to inspect")
+
 # Invoke with thread_id AND user_id
 user_id = "user_123"
 config = RunnableConfig(configurable={
@@ -44,7 +77,11 @@ config = RunnableConfig(configurable={
     "user_id": user_id              # For memory store namespace
 })
 
-result = graph.invoke({"messages": [{"role": "user", "content": "What is 5 * 3?"}]}, config)
+@dataclass
+class Context:
+    user_id: str
+
+result = graph.invoke({"messages": [{"role": "user", "content": "What is 5 * 3?"}]}, config, context=Context(user_id=user_id))
 
 
 def print_agent_result(res):
@@ -93,6 +130,17 @@ def print_agent_result(res):
 
 print_agent_result(result)
 
+# Demonstrate agent calling memory tools (save then retrieve)
+save_msg = {"messages": [{"role": "user", "content": "Save my profile: name=Alice, age=30"}]} 
+res_save = graph.invoke(save_msg, config, context=Context(user_id=user_id))
+print("-- after save attempt --")
+print_agent_result(res_save)
+
+get_msg = {"messages": [{"role": "user", "content": "Get my profile"}]}
+res_get = graph.invoke(get_msg, config, context=Context(user_id=user_id))
+print("-- after get attempt --")
+print_agent_result(res_get)
+
 # Example: Save and retrieve long-term memory for user
 user_namespace = (user_id, "profile")
 store.put(user_namespace, "user_profile", {"name": "Akash", "preferences": ["SaaS", "AI"]})
@@ -104,18 +152,7 @@ items = store.search(user_namespace, filter={"preferences": "AI"}, query="prefer
 print("Search results:", [item.value for item in items])
 
 # Example: Add a tool to update user info in long-term memory
-def save_user_info(user_info: dict, runtime):
-    store = runtime.store
-    user_id = runtime.context.user_id
-    store.put(("users",), user_id, user_info)
-    return "Successfully saved user info."
-
-# Example: Add a tool to retrieve user info from long-term memory
-def get_user_info(runtime):
-    store = runtime.store
-    user_id = runtime.context.user_id
-    user_info = store.get(("users",), user_id)
-    return str(user_info.value) if user_info else "Unknown user"
+# ...existing tools defined earlier (save_user_info, get_user_info) are used here; no duplicates.
 
 # Example: Trim messages to fit context window
 def trim_messages(messages, max_messages=3):
