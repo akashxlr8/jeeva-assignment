@@ -67,7 +67,7 @@ def get_user_info() -> str:
         return "Error: No user context."
         
     user_info = store.get(("users",), current_user_id)
-    return str(user_info.value) if user_info else "Unknown user"
+    return str(user_info.value) if user_info else "No user profile found."
 
 @tool
 def update_instructions(new_instructions: str) -> str:
@@ -77,8 +77,9 @@ def update_instructions(new_instructions: str) -> str:
 
 # Create model with tools
 model = init_chat_model(
-    "gpt-4o-mini", 
-    temperature=0
+    "gpt-4.1-mini", 
+    temperature=0,
+    max_tokens=1000
 )
 tools = [multiply, add, save_user_info, get_user_info, update_instructions]
 llm_with_tools = model.bind_tools(tools)
@@ -116,6 +117,7 @@ def llm_call(state: MessagesState, config: RunnableConfig):
     
     system_content += f"\n\nUser profile: {profile_str}"
     system_content += f"\n\nCurrent Persona: {persona_name}"
+    system_content += "\n\nNote: Use the conversation history to answer questions about previous interactions. Only use tools if you need to perform a specific action or retrieve data not present in the chat."
     
     # Trim messages for short-term memory management
     trimmed_messages = trim_messages(state["messages"])
@@ -134,6 +136,10 @@ def llm_call(state: MessagesState, config: RunnableConfig):
 
 def tool_node(state: MessagesState, config: RunnableConfig):
     """Performs the tool call"""
+    # Ensure global context is set for tools
+    global current_user_id
+    current_user_id = config["configurable"].get("user_id", "unknown")
+
     result = []
     last_msg = state["messages"][-1]
     if hasattr(last_msg, 'tool_calls'):
