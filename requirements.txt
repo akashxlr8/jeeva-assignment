@@ -1,0 +1,9 @@
+langchain
+langgraph
+langchain-openai
+fastapi
+uvicorn
+
+langgraph-checkpoint-sqlite
+python-dotenv
+pytest
