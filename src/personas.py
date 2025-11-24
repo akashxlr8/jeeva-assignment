@@ -1,5 +1,7 @@
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Optional, Literal
+from pydantic import BaseModel, Field
+from langchain_openai import ChatOpenAI
 
 # Define persona system prompts
 PERSONAS: Dict[str, str] = {
@@ -9,28 +11,39 @@ PERSONAS: Dict[str, str] = {
     # Add more personas as needed
 }
 
+class PersonaDecision(BaseModel):
+    """Decision on whether to switch persona or continue with the current one."""
+    thinking: str = Field(description="Reasoning and thinking for the decision.")
+    target_persona: Literal["mentor", "investor", "base"] = Field(
+        description="The persona the user wants to interact with. Use 'base' if no specific persona is requested or if the user wants to continue the current conversation without switching."
+    )
+
 def get_persona_prompt(persona: str) -> str:
     """Get the system prompt for a given persona."""
     return PERSONAS.get(persona.lower(), PERSONAS["base"])
 
 def detect_persona_request(message: str) -> str:
-    """Detect if the user is requesting a new persona and return the persona name."""
-    message_lower = message.lower()
+    """Detect if the user is requesting a new persona and return the persona name using an LLM."""
+    llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0)
+    structured_llm = llm.with_structured_output(PersonaDecision)
     
-    # Mentor triggers
-    if any(phrase in message_lower for phrase in [
-        "act like my mentor", "be my mentor", "switch to mentor", "back to mentor", "act as a mentor"
-    ]):
-        return "mentor"
-        
-    # Investor triggers
-    elif any(phrase in message_lower for phrase in [
-        "act like an investor", "be an investor", "switch to investor", "back to investor", "act as an investor"
-    ]):
-        return "investor"
-        
-    # Add more detection logic
-    return "base"
+    system_prompt = """You are an intent classifier for a persona-switching chatbot.
+    Analyze the user's message to determine if they explicitly want to switch to a specific persona (Mentor or Investor) or if they are just continuing the conversation.
+    
+    - If the user says "act like my mentor", "switch to investor", "back to mentor", etc., return the corresponding persona.
+    - If the user asks a question without specifying a persona change (e.g., "how do I scale?", "what is TAM?"), return 'base' to indicate no switch is requested (the system will handle context).
+    - Only return a specific persona if the user EXPLICITLY requests a switch or context change.
+    """
+    
+    try:
+        decision = structured_llm.invoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message}
+        ])
+        return decision.target_persona
+    except Exception as e:
+        print(f"Error in persona detection: {e}")
+        return "base"
 
 class PersonaManager:
     def __init__(self):
