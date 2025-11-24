@@ -27,8 +27,12 @@ def detect_persona_request(message: str) -> str:
     llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0)
     structured_llm = llm.with_structured_output(PersonaDecision)
     
-    system_prompt = """You are an intent classifier for a persona-switching chatbot.
-    Analyze the user's message to determine if they explicitly want to switch to a specific persona (Mentor or Investor) or if they are just continuing the conversation.
+    # Dynamically generate available personas list (excluding 'base')
+    available_personas = [k.capitalize() for k in PERSONAS.keys() if k != "base"]
+    personas_list = ", ".join(available_personas)
+    
+    system_prompt = f"""You are an intent classifier for a persona-switching chatbot.
+    Analyze the user's message to determine if they explicitly want to switch to a specific persona <persona list> ({personas_list}) </persona list> or if they are just continuing the conversation.
     
     - If the user says "act like my mentor", "switch to investor", "back to mentor", etc., return the corresponding persona.
     - If the user asks a question without specifying a persona change (e.g., "how do I scale?", "what is TAM?"), return 'base' to indicate no switch is requested (the system will handle context).
