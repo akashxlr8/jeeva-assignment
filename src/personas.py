@@ -1,5 +1,5 @@
 import uuid
-from typing import Dict, Optional, Literal
+from typing import Dict, Optional, Literal, get_args
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 
@@ -14,9 +14,15 @@ PERSONAS: Dict[str, str] = {
 class PersonaDecision(BaseModel):
     """Decision on whether to switch persona or continue with the current one."""
     thinking: str = Field(description="Reasoning and thinking for the decision.")
-    target_persona: Literal["mentor", "investor", "base"] = Field(
+    target_persona: str = Field(
         description="The persona the user wants to interact with. Use 'base' if no specific persona is requested or if the user wants to continue the current conversation without switching."
     )
+
+    @classmethod
+    def validate_target_persona(cls, v):
+        if v not in PERSONAS:
+            raise ValueError(f"Invalid persona: {v}. Must be one of {list(PERSONAS.keys())}")
+        return v
 
 def get_persona_prompt(persona: str) -> str:
     """Get the system prompt for a given persona."""
@@ -28,7 +34,7 @@ def detect_persona_request(message: str) -> str:
     structured_llm = llm.with_structured_output(PersonaDecision)
     
     # Dynamically generate available personas list (excluding 'base')
-    available_personas = [k.capitalize() for k in PERSONAS.keys() if k != "base"]
+    available_personas = [k for k in PERSONAS.keys()]
     personas_list = ", ".join(available_personas)
     
     system_prompt = f"""You are an intent classifier for a persona-switching chatbot.
