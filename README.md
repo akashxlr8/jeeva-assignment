@@ -111,7 +111,12 @@ curl "http://localhost:8000/personas"
 - Add more personas (e.g., Coach, Analyst)
 - Add authentication and rate limiting
 - Deploy to cloud (e.g., AWS, Vercel)
-- Implement a frontend UI
+
+
+- Implement a frontend UI using streamlit
+- User manageable system prompts for each persona
+- User customizable thread names and management
+- Semantic search across threads to enhance context for better responses
 
 ## Testing
 Run the integration test script to verify the API and persona switching:
