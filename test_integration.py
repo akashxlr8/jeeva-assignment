@@ -24,6 +24,19 @@ def run_tests():
     print(f"Testing with User ID: {user_id}")
     
     try:
+        # Fetch available personas
+        print("\nFetching available personas...")
+        response = requests.get(f"{base_url}/personas")
+        print(f"Status: {response.status_code}")
+        print(f"Personas: {response.json()}")
+        assert response.status_code == 200
+        available_personas = response.json().get("personas", [])
+        
+        # Verify required personas exist
+        required_personas = ["mentor", "investor"]
+        for p in required_personas:
+            assert p in available_personas, f"Required persona '{p}' not found in {available_personas}"
+
         # Test 1: Initial Chat (Default Persona)
         print("\nTest 1: Initial Chat (Default Persona)")
         response = requests.post(f"{base_url}/chat", json={"user_id": user_id, "message": "Hello, who are you?"})
