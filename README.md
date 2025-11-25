@@ -6,7 +6,7 @@ A FastAPI-based chatbot that dynamically switches personas based on user request
 - Dynamic persona switching (e.g., Mentor, Investor)
 - Persistent chat history per user and thread
 - FastAPI backend with REST endpoints
-- LangChain integration with OpenAI GPT-4
+- LangChain integration with OpenAI GPT-4.1 models
 
 ## Setup Instructions
 
@@ -37,7 +37,7 @@ A FastAPI-based chatbot that dynamically switches personas based on user request
    python main.py
    ```
 
-The API will be available at `http://localhost:8000`.
+The API will be available at `http://localhost:8000/docs`.
 
 ## API Endpoints
 
@@ -56,7 +56,8 @@ Send a message and get a response.
 ```json
 {
   "response": "As your mentor...",
-  "thread": "mentor"
+  "thread_id": "mentor_thread_id",
+  "persona": "Mentor"
 }
 ```
 
@@ -79,6 +80,16 @@ Get chat history for a user.
 }
 ```
 
+### GET /personas
+Get the list of available personas.
+
+**Response:**
+```json
+{
+  "personas": ["base", "mentor", "investor", ...]
+}
+```
+
 ## Example cURL Commands
 
 Chat:
@@ -91,9 +102,19 @@ History:
 curl "http://localhost:8000/chat_history?user_id=user123"
 ```
 
+Personas:
+```bash
+curl "http://localhost:8000/personas"
+```
+
 ## Future Improvements
 - Add more personas (e.g., Coach, Analyst)
-- Implement message trimming for long conversations
 - Add authentication and rate limiting
 - Deploy to cloud (e.g., AWS, Vercel)
-- Use more advanced checkpointers for scalability
+- Implement a frontend UI
+
+## Testing
+Run the integration test script to verify the API and persona switching:
+```bash
+python test_integration.py
+```
