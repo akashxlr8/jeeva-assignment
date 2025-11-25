@@ -83,26 +83,37 @@ class PersonaDecision(BaseModel):
 
 def generate_new_persona_prompt(name: str, description: str) -> str:
     """Generate a system prompt for a new persona using an LLM."""
-    llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.7)
-    prompt = f"""Generate a system prompt for a persona named '{name}'.
-    Description: {description}
-    
-    The prompt should start with "You are {name}..." and define the tone, style, and expertise.
-    Keep it concise (2-3 sentences).
-    """
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+    prompt = f"""
+Generate a concise system prompt to be used as the agent's system instructions.
+
+Requirements:
+- Start the prompt with the literal text: "You act as a {name}..." .
+- In 2-3 short sentences, describe the persona's expertise and decision-style using the provided description: "{description}".
+- Specify tone/voice (e.g., professional, candid, skeptical, warm), and 1-2 concrete behaviors the assistant must follow (for example: ask clarifying questions, prioritize business metrics like TAM/SAM/SOM and revenue models, identify risks, provide actionable next steps, reference thread history and persistent memory when relevant).
+- Keep instructions operational and actionable (what to do and what to prioritize), not philosophical.
+- At the end, add a single short example assistant opening line (one sentence) prefixed with "Example:" that demonstrates tone and first-turn behavior.
+
+Context (use this to make the prompt relevant): this project implements a Persona-Switching Agentic Chatbot where each persona becomes the system prompt for a dedicated conversation thread. Threads are persisted and may be resumed later. The persona should assume responsibility for thread-level memory, ask clarifying questions when needed, and remain concise.
+
+Return only the system prompt text (including the final "Example:" line). Do NOT include any additional commentary.
+"""
     response = llm.invoke(prompt)
     return str(response.content)
 
 def detect_persona_request(message: str) -> str:
     """Detect intent, handle persona creation if needed, and return the target persona name."""
-    llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0)
+    llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
     structured_llm = llm.with_structured_output(PersonaDecision)
     
     available_personas = ", ".join(PERSONAS.keys())
     
     system_prompt = f"""You are an intent classifier for a persona-switching chatbot.
-    Available personas: {available_personas}
-
+    Available personas: 
+    <available_personas>
+    {available_personas}
+    </available_personas>
+    
     Return a structured object that matches the `PersonaDecision` model exactly.
     The object must be JSON-like with these fields:
         - thinking: short reasoning string
