@@ -1,56 +1,181 @@
 import uuid
+import sqlite3
 from typing import Dict, Optional, Literal, get_args
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from langchain_openai import ChatOpenAI
 
-# Define persona system prompts
-PERSONAS: Dict[str, str] = {
+DB_PATH = "personas.db"
+
+# Define default personas for seeding
+DEFAULT_PERSONAS: Dict[str, str] = {
     "base": "You are a Business Domain Expert capable of assuming various professional roles. Adapt your responses based on the requested persona.",
     "mentor": "You are an experienced mentor guiding the user on business and product development. Provide thoughtful advice, ask probing questions, and draw from real-world examples.",
     "investor": "You are a skeptical investor evaluating business opportunities. Focus on metrics like TAM, SAM, SOM, revenue models, and risks. Be critical and data-driven.",
-    # Add more personas as needed
 }
 
+def init_personas_db():
+    """Initialize the personas database and seed with defaults if empty."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS personas (
+            name TEXT PRIMARY KEY,
+            prompt TEXT
+        )
+    ''')
+    
+    cursor.execute('SELECT count(*) FROM personas')
+    if cursor.fetchone()[0] == 0:
+        print("Seeding personas DB with defaults...")
+        for name, prompt in DEFAULT_PERSONAS.items():
+            cursor.execute('INSERT INTO personas (name, prompt) VALUES (?, ?)', (name, prompt))
+        conn.commit()
+    conn.close()
+
+def load_personas() -> Dict[str, str]:
+    """Load all personas from the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT name, prompt FROM personas')
+    rows = cursor.fetchall()
+    conn.close()
+    return {row[0]: row[1] for row in rows}
+
+def save_persona_to_db(name: str, prompt: str):
+    """Save a new persona to the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR REPLACE INTO personas (name, prompt) VALUES (?, ?)', (name, prompt))
+    conn.commit()
+    conn.close()
+
+# Initialize DB and load personas into memory
+init_personas_db()
+PERSONAS: Dict[str, str] = load_personas()
+
 class PersonaDecision(BaseModel):
-    """Decision on whether to switch persona or continue with the current one."""
+    """Decision on whether to switch persona, create a new one, or continue."""
     thinking: str = Field(description="Reasoning and thinking for the decision.")
-    target_persona: str = Field(
-        description="The persona the user wants to interact with. Use 'base' if no specific persona is requested or if the user wants to continue the current conversation without switching."
+    action: Literal["switch", "create", "continue"] = Field(
+        description="The action to take. 'switch' for existing personas, 'create' for new ones, 'continue' to stay."
+    )
+    target_persona: Optional[str] = Field(
+        default=None,
+        description="The existing persona to switch to. Required if action is 'switch'."
+    )
+    new_persona_name: Optional[str] = Field(
+        default=None,
+        description="Name of the new persona. Required if action is 'create'."
+    )
+    new_persona_description: Optional[str] = Field(
+        default=None,
+        description="Description of the new persona. Required if action is 'create'."
     )
 
-    @classmethod
-    def validate_target_persona(cls, v):
-        if v not in PERSONAS:
-            raise ValueError(f"Invalid persona: {v}. Must be one of {list(PERSONAS.keys())}")
-        return v
+    @model_validator(mode='after')
+    def validate_decision(self):
+        if self.action == 'switch':
+            if not self.target_persona:
+                raise ValueError("target_persona is required for switch action")
+            if self.target_persona not in PERSONAS:
+                raise ValueError(f"Invalid persona: {self.target_persona}. Must be one of {list(PERSONAS.keys())}")
+        return self
 
-def get_persona_prompt(persona: str) -> str:
-    """Get the system prompt for a given persona."""
-    return PERSONAS.get(persona.lower(), PERSONAS["base"])
+def generate_new_persona_prompt(name: str, description: str) -> str:
+    """Generate a system prompt for a new persona using an LLM."""
+    llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.7)
+    prompt = f"""Generate a system prompt for a persona named '{name}'.
+    Description: {description}
+    
+    The prompt should start with "You are {name}..." and define the tone, style, and expertise.
+    Keep it concise (2-3 sentences).
+    """
+    response = llm.invoke(prompt)
+    return str(response.content)
 
 def detect_persona_request(message: str) -> str:
-    """Detect if the user is requesting a new persona and return the persona name using an LLM."""
+    """Detect intent, handle persona creation if needed, and return the target persona name."""
     llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0)
     structured_llm = llm.with_structured_output(PersonaDecision)
     
-    # Dynamically generate available personas list (excluding 'base')
-    available_personas = [k for k in PERSONAS.keys()]
-    personas_list = ", ".join(available_personas)
+    available_personas = ", ".join(PERSONAS.keys())
     
     system_prompt = f"""You are an intent classifier for a persona-switching chatbot.
-    Analyze the user's message to determine if they explicitly want to switch to a specific persona <persona list> ({personas_list}) </persona list> or if they are just continuing the conversation.
-    
-    - If the user says "act like my mentor", "switch to investor", "back to mentor", etc., return the corresponding persona.
-    - If the user asks a question without specifying a persona change (e.g., "how do I scale?", "what is TAM?"), return 'base' to indicate no switch is requested (the system will handle context).
-    - Only return a specific persona if the user EXPLICITLY requests a switch or context change.
+    Available personas: {available_personas}
+
+    Return a structured object that matches the `PersonaDecision` model exactly.
+    The object must be JSON-like with these fields:
+        - thinking: short reasoning string
+        - action: one of "switch", "create", "continue"
+        - target_persona: (when action is "switch") existing persona name
+        - new_persona_name: (when action is "create") name for the new persona
+        - new_persona_description: (when action is "create") short description for the new persona
+
+    Few-shot examples (exact structured output expected):
+
+    User: "Act like a mentor, help me with constant burnouts"
+    Output:
+    {{
+        "thinking": "User explicitly asked to act as a mentor and requested guidance",
+        "action": "switch",
+        "target_persona": "mentor"
+    }}
+
+    User: "Be a pirate"
+    Output:
+    {{
+        "thinking": "User explicitly requested a pirate persona not in the list",
+        "action": "create",
+        "new_persona_name": "pirate",
+        "new_persona_description": "A swashbuckling pirate persona: uses nautical metaphors, bold informal tone, and adventurous examples."
+    }}
+
+    User: "How do I scale my product?"
+    Output:
+    {{
+        "thinking": "User asks a general product question without requesting a persona change",
+        "action": "continue"
+    }}
+
+    Important: ONLY return the structured object (no extra commentary). Use persona names as lowercase keys that match the available persona list when switching. If creating, return a concise description (1-2 sentences).
     """
-    
+
     try:
         decision = structured_llm.invoke([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": message}
         ])
-        return decision.target_persona
+        
+        # Handle potential dict return from structured_llm
+        if isinstance(decision, dict):
+            action = decision.get("action")
+            target_persona = decision.get("target_persona")
+            new_persona_name = decision.get("new_persona_name")
+            new_persona_description = decision.get("new_persona_description")
+        else:
+            action = getattr(decision, "action", None)
+            target_persona = getattr(decision, "target_persona", None)
+            new_persona_name = getattr(decision, "new_persona_name", None)
+            new_persona_description = getattr(decision, "new_persona_description", None)
+        
+        if action == "switch":
+            return str(target_persona) if target_persona else "base"
+            
+        elif action == "create":
+            name = new_persona_name.lower() if new_persona_name else "unknown"
+            if name in PERSONAS:
+                return name
+            
+            description = new_persona_description or f"A {name} persona."
+            print(f"Creating new persona: {name}")
+            new_prompt = generate_new_persona_prompt(name, description)
+            PERSONAS[name] = new_prompt
+            save_persona_to_db(name, new_prompt)
+            return name
+            
+        else: # continue
+            return "base"
+            
     except Exception as e:
         print(f"Error in persona detection: {e}")
         return "base"
