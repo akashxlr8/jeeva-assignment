@@ -94,17 +94,28 @@ Get the list of available personas.
 
 Chat:
 ```bash
-curl -X POST "http://localhost:8000/chat" -H "Content-Type: application/json" -d '{"user_id": "user123", "message": "act like my mentor"}'
+curl -X 'POST' \
+  'http://localhost:8000/chat' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "user_id": "akash",
+  "message": "switch to mentor mode, how do i get energy in early morning"
+}'
 ```
 
 History:
 ```bash
-curl "http://localhost:8000/chat_history?user_id=user123"
-```
+curl -X 'GET' \
+  'http://localhost:8000/chat_history?user_id=user_1' \
+  -H 'accept: application/json'
+  ```
 
 Personas:
 ```bash
-curl "http://localhost:8000/personas"
+curl -X 'GET' \
+  'http://localhost:8000/personas' \
+  -H 'accept: application/json'
 ```
 
 ## Future Improvements
@@ -117,6 +128,7 @@ curl "http://localhost:8000/personas"
 - User manageable system prompts for each persona
 - User customizable thread names and management
 - Semantic search across threads to enhance context for better responses
+- User specific personas list and management (currently global personas list)
 
 ## Testing
 Run the integration test script to verify the API and persona switching:
